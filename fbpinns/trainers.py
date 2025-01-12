@@ -479,6 +479,13 @@ def _common_train_initialisation(c, key, all_params, problem, domain):
 class FBPINNTrainer(_Trainer):
     "FBPINN model trainer class"
 
+    # JOSE
+    def __init__(self):
+        self.timeit = 0
+        self.params = 0
+        self.final_loss = 0
+        self.initial_loss = 0
+
     def _get_x_batch(self, i, active, all_params, x_batch_global, constraints_global, constraint_fs_global, constraint_offsets_global, decomposition):
         "Get the x_batch points from x_batch_global which are inside active models"
 
@@ -651,6 +658,10 @@ class FBPINNTrainer(_Trainer):
                                              active_params, fixed_params, static_params_dynamic, static_params_static,
                                              takess, constraints, model_fns, jmapss, loss_fn).compile()
                 logger.info(f"[i: {i}/{self.c.n_steps}] Compiling done ({time.time()-startc:.2f} s)")
+
+                # JOSE
+                self.timeit += time.time()-startc
+                
                 cost_ = update.cost_analysis()
                 p,f = total_size(active_params["network"]), cost_[0]["flops"] if (cost_ and "flops" in cost_[0]) else 0
                 logger.debug("p, f")
@@ -665,10 +676,17 @@ class FBPINNTrainer(_Trainer):
                             lossval)
 
             # take a training step
+            
+            azed = time.time() # JOSE
             lossval, active_opt_states, active_params = update(active_opt_states,
                                          active_params, fixed_params, static_params_dynamic,
                                          takess, constraints)# note compiled function only accepts dynamic arguments
             pstep, fstep = pstep+p, fstep+f
+            self.timeit += time.time()-azed # JOSE
+
+            # JOSE
+            if i == 0:
+                self.initial_loss = lossval
 
             # report
             u_test_losses, start1, report_time = \
@@ -680,12 +698,17 @@ class FBPINNTrainer(_Trainer):
         # cleanup
         writer.close()
         logger.info(f"[i: {i+1}/{self.c.n_steps}] Training complete")
-
+        
         # return trained parameters
         all_params["trainable"] = merge_active(active_params, all_params["trainable"])
         all_opt_states = tree_map_dicts(merge_active, active_opt_states, all_opt_states)
 
-        return all_params
+        # JOSE
+        self.final_loss = lossval/self.initial_loss 
+        for k in all_params["trainable"]:
+            self.params = total_size(all_params["trainable"][k])
+
+        return all_params, self.timeit, self.final_loss, self.params # JOSE
 
     def _report(self, i, pstep, fstep, u_test_losses, start0, start1, report_time,
                 u_exact, x_batch_test, test_inputs, all_params, all_opt_states, model_fns, problem, decomposition,
