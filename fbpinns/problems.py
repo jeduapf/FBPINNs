@@ -61,7 +61,152 @@ class Problem:
         """Defines exact solution, if it exists"""
         raise NotImplementedError
 
+# JOSE
+class ForcedHarmonicOscillator1D(Problem):
+    """
+    Solves the time-dependent damped harmonic oscillator
+        For a mass m = 1:
+          d^2 u      du
+         ------ + mu -- + k*u = F(t)
+          dt^2       dt
 
+    The force is defined as: F(t) = (F0/m) * cos(W * t)
+
+    Boundary conditions:
+        u(0) = 1
+        u'(0) = 0
+    """
+
+    @staticmethod
+    def init_params(d=2, w0=20, F0=1.0, W=1.0, x0 = 1.0, x_0 = 0.0):
+
+        mu, k = 2 * d, w0**2
+
+        static_params = {
+            "dims": (1, 1),  # Dimensions of the output and input
+            "d": d,
+            "b": d,
+            "w0": w0,
+            "mu": mu,
+            "k": k,
+            "F0": F0,
+            "W": W,
+            "x0": x0,
+            "x_0": x_0,
+        }
+
+        return static_params, {}
+
+    @staticmethod
+    def sample_constraints(all_params, domain, key, sampler, batch_shapes):
+
+        # Physics loss
+        x_batch_phys = domain.sample_interior(all_params, key, sampler, batch_shapes[0])
+        F0 = all_params["static"]["problem"]["F0"]
+        W = all_params["static"]["problem"]["W"]
+        F_phys = F0 * jnp.cos(W * x_batch_phys)  # Compute force at sampled points
+        required_ujs_phys = (
+            (0, ()),
+            (0, (0,)),
+            (0, (0, 0)),
+        )
+
+        # Boundary loss
+        x_batch_boundary = jnp.array([0.0]).reshape((1, 1))
+        u_boundary = jnp.array([1.0]).reshape((1, 1))
+        ut_boundary = jnp.array([0.0]).reshape((1, 1))
+        required_ujs_boundary = (
+            (0, ()),
+            (0, (0,)),
+        )
+
+        return [
+            [x_batch_phys, F_phys, required_ujs_phys],
+            [x_batch_boundary, u_boundary, ut_boundary, required_ujs_boundary],
+        ]
+
+    @staticmethod
+    def loss_fn(all_params, constraints):
+        """
+        Compute the loss function.
+
+        Parameters:
+            all_params (dict): Static parameters.
+            constraints (list): Constraints from `sample_constraints`.
+
+        Returns:
+            loss (float): Total loss (physics + boundary).
+        """
+        mu, k = all_params["static"]["problem"]["mu"], all_params["static"]["problem"]["k"]
+
+        # Physics loss
+        _, F, u, ut, utt = constraints[0]
+        phys = jnp.mean((utt + mu * ut + k * u - F) ** 2)
+
+        # Boundary loss
+        _, uc, utc, u, ut = constraints[1]
+        boundary = (
+            1e6 * jnp.mean((u - uc) ** 2) + 1e2 * jnp.mean((ut - utc) ** 2)
+        )
+
+        return phys + boundary
+
+    @staticmethod
+    def exact_solution(all_params, x_batch, batch_shape=None):
+        """
+        Compute the displacement of a forced damped spring-mass system.
+
+        Parameters:
+            all_params (dict): Dictionary containing system parameters:
+                - "m": Mass of the system.
+                - "b": Damping coefficient.
+                - "k": Spring constant.
+                - "F0": Amplitude of the external force.
+                - "W": Angular frequency of the external force.
+                - "x0": Initial displacement.
+                - "x_0": Initial velocity.
+            t (array-like): Time array for which to compute the displacement.
+
+        Returns:
+            jnp.ndarray: Displacement of the system at each time step.
+        """
+        # Extract system parameters
+        m = 1
+        b, k = all_params["static"]["problem"]["b"], all_params["static"]["problem"]["k"]
+        F0, W = all_params["static"]["problem"]["F0"], all_params["static"]["problem"]["W"]
+        x0, x_0 = all_params["static"]["problem"]["x0"], all_params["static"]["problem"]["x_0"]
+
+        # Derived parameters
+        w0 = jnp.sqrt(k / m)                   # Natural angular frequency
+        ksi = b / (2 * jnp.sqrt(m * k))        # Damping ratio
+
+        # --------- Homogeneous solution ---------
+        if jnp.abs(ksi - 1) < 1e-9:  # Critically damped
+            xh = jnp.exp(-w0 * x_batch) * (x0 + (x_0 + w0 * x0) * x_batch)
+        elif ksi > 1:  # Overdamped
+            wd = w0 * jnp.sqrt(ksi**2 - 1)
+            xh = jnp.exp(-ksi * w0 * x_batch) * (
+                ((x_0 + ksi * x0 * w0) / wd) * jnp.sinh(wd * x_batch) + x0 * jnp.cosh(wd * x_batch)
+            )
+        else:  # Underdamped (ksi < 1)
+            wd = w0 * jnp.sqrt(1 - ksi**2)
+            xh = jnp.exp(-ksi * w0 * x_batch) * (
+                ((x_0 + ksi * x0 * w0) / wd) * jnp.sin(wd * x_batch) + x0 * jnp.cos(wd * x_batch)
+            )
+
+        # --------- Forced sinusoidal solution ---------
+        xf = (
+            F0
+            / ((2 * ksi * w0 * W)**2 + (w0**2 - W**2)**2)
+        ) * (
+            2 * ksi * w0 * W * jnp.sin(W * x_batch)
+            + (w0**2 - W**2) * jnp.cos(W * x_batch)
+        )
+
+        # Total displacement
+        x = xh + xf
+
+        return x
 
 
 
